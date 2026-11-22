@@ -1,0 +1,50 @@
+# Two API instances sharing ONE SQLite database file on a shared volume.
+# SQLite WAL + BEGIN IMMEDIATE transactions serialise their writes so
+# concurrent tile replacements under the same coarse cell are both counted.
+#
+#   docker compose up -d
+#   open http://localhost:8001/docs  (or 8002 for the second instance)
+#   docker compose run --rm selftest    # functional + concurrency suite
+#
+# Note: the shared volume must be on a local/block filesystem. Networked
+# filesystems (NFS, some bind mounts on virtual shares) do not provide the
+# locking semantics SQLite relies on.
+
+services:
+  api-a:
+    build: .
+    environment:
+      CANOPY_DB_PATH: /data/canopy.db
+    ports:
+      - "8001:8000"
+    volumes:
+      - canopy-data:/data
+    restart: unless-stopped
+
+  api-b:
+    build: .
+    environment:
+      CANOPY_DB_PATH: /data/canopy.db
+    ports:
+      - "8002:8000"
+    volumes:
+      - canopy-data:/data
+    restart: unless-stopped
+
+  selftest:
+    build: .
+    working_dir: /workspace
+    environment:
+      CANOPY_DB_PATH: /data/canopy.db
+      PYTHONPATH: /workspace
+    command: python -m pytest -v tests
+    volumes:
+      - canopy-data:/data
+      - ./:/workspace
+    profiles: ["test"]
+    depends_on:
+      - api-a
+      - api-b
+
+volumes:
+  canopy-data:
