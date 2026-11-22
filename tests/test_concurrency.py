@@ -141,8 +141,13 @@ def test_rollback_keeps_previous_tile_and_summaries(tmp_path):
     conn.close()
 
 
-def test_replacement_does_not_scan_other_tiles_raw_pixels(tmp_path):
-    """Statement trace proves refresh of tile (1,0) reads no other tile BLOB."""
+def test_replacement_reads_only_raw_tile_at_same_position(tmp_path):
+    """Statement trace proves refreshing tile (1,0) reads no other raw tile.
+
+    The comparison pyramid needs the counterpart period's tile at the *same*
+    position only (here it is absent), so only a point lookup may touch the
+    ``tiles`` table; its raw pixels are never scanned by range.
+    """
     path = str(tmp_path / "trace.db")
     db.init_db(path)
     conn = db.connect(path)
@@ -150,11 +155,13 @@ def test_replacement_does_not_scan_other_tiles_raw_pixels(tmp_path):
     db.replace_tile(conn, 2, 0, make_tile(50), "t2")
 
     scanned_tables: list[str] = set()
+    tile_selects: list[str] = []
 
     def tracer(statement):
-        s = statement.upper()
+        s = " ".join(statement.upper().split())
         if " FROM TILES" in s:
             scanned_tables.add("tiles")
+            tile_selects.append(s)
         if " FROM SUMMARIES" in s:
             scanned_tables.add("summaries")
         return None
@@ -163,9 +170,11 @@ def test_replacement_does_not_scan_other_tiles_raw_pixels(tmp_path):
     db.replace_tile(conn, 1, 0, make_tile(90), "t1")
     conn.set_trace_callback(None)
 
-    # the replacement upserts its own tile but never SELECTs the tiles table:
-    # higher levels are rebuilt from summaries only
-    assert "tiles" not in scanned_tables
+    # any raw-tile read during the replacement is a single-position lookup,
+    # never a range scan over neighbouring tiles
+    assert tile_selects
+    assert all("BETWEEN" not in s for s in tile_selects)
+    assert all("TILE_X = 1" in s and "TILE_Y = 0" in s for s in tile_selects)
     assert "summaries" in scanned_tables
 
     # tiles (0,0) and (1,0) sit in level-5 cell (0,0); tile (2,0) in (1,0).
